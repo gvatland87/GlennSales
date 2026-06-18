@@ -2,12 +2,12 @@
 
 export type Company = {
   id: string;
-  name: string;      // "GMC Bergen AS"
-  shortName: string; // "GMC Bergen"
-  color: string;     // Tailwind-klasse for badge-farge
+  name: string;       // "GMC Bergen AS"
+  shortName: string;  // "GMC Bergen"
+  color: string;      // Tailwind-klasse for badge-farge
 };
 
-export type UserRole = 'rep' | 'leder';
+export type UserRole = 'rep' | 'leder' | 'admin';
 
 export type User = {
   id: string;
@@ -17,6 +17,16 @@ export type User = {
   role: UserRole;
 };
 
+/** Innlogget brukers profil med selskapsinfo — returneres av getCurrentProfile() */
+export type Profile = {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  companyId: string | null;
+  company: Company | null;
+};
+
 export type MeetingStatus = 'active' | 'cancelled';
 
 export type Meeting = {
@@ -24,10 +34,17 @@ export type Meeting = {
   ownerUserId: string;
   companyId: string;
   customerName: string;
-  startsAt: string;  // ISO 8601
+  startsAt: string;   // ISO 8601
   location: string;
   agenda?: string;
   status: MeetingStatus;
+};
+
+/** Møte med eier-info inkludert (unngår N+1-kall) */
+export type EnrichedMeeting = Meeting & {
+  ownerName: string;
+  ownerCompanyShortName: string;
+  ownerCompanyColor: string;
 };
 
 export type InterestStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
@@ -38,7 +55,15 @@ export type Interest = {
   userId: string;
   createdAt: string;
   status: InterestStatus;
-  reviewedAt: string | null; // settes av eier ved godkjenning/avslag
+  reviewedAt: string | null;
+};
+
+/** Interesse med interessentens bruker- og selskapsinfo */
+export type EnrichedInterest = Interest & {
+  userName: string;
+  userEmail: string;
+  userCompanyShortName: string;
+  userCompanyColor: string;
 };
 
 export type NotificationType =
@@ -54,4 +79,11 @@ export type Notification = {
   type: NotificationType;
   readAt: string | null;
   createdAt: string;
+};
+
+/** Varsel med avsender- og møteinfo for visning */
+export type EnrichedNotification = Notification & {
+  fromUserName: string;
+  fromUserCompanyShortName: string;
+  meetingCustomerName: string;
 };

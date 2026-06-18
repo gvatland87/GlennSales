@@ -1,19 +1,16 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import type { Meeting, Interest } from '@/lib/types';
+import type { EnrichedMeeting, Interest } from '@/lib/types';
 import {
-  getUser,
-  getCompany,
-  getActiveInterests,
   getUserInterest,
+  getInterestCount,
   registerInterest,
   withdrawInterest,
-  GS_UPDATE_EVENT,
 } from '@/lib/store';
 
 type Props = {
-  meeting: Meeting;
+  meeting: EnrichedMeeting;
   currentUserId: string;
 };
 
@@ -23,9 +20,9 @@ function toICSDate(date: Date): string {
   return date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
 }
 
-function downloadICS(meeting: Meeting): void {
+function downloadICS(meeting: EnrichedMeeting): void {
   const start = new Date(meeting.startsAt);
-  const end   = new Date(start.getTime() + 60 * 60 * 1000); // standard 1 time
+  const end   = new Date(start.getTime() + 60 * 60 * 1000);
 
   const lines = [
     'BEGIN:VCALENDAR',
@@ -38,9 +35,7 @@ function downloadICS(meeting: Meeting): void {
     `DTEND:${toICSDate(end)}`,
     `SUMMARY:Møte med ${meeting.customerName}`,
     `LOCATION:${meeting.location}`,
-    meeting.agenda
-      ? `DESCRIPTION:${meeting.agenda.replace(/[\r\n]+/g, '\\n')}`
-      : '',
+    meeting.agenda ? `DESCRIPTION:${meeting.agenda.replace(/[\r\n]+/g, '\\n')}` : '',
     `UID:glennsales-${meeting.id}@gmc.no`,
     'END:VEVENT',
     'END:VCALENDAR',
@@ -62,34 +57,43 @@ function downloadICS(meeting: Meeting): void {
 // ── Komponent ─────────────────────────────────────────────
 
 export default function MeetingCard({ meeting, currentUserId }: Props) {
-  const owner        = getUser(meeting.ownerUserId);
-  const ownerCompany = owner ? getCompany(owner.companyId) : null;
-  const isOwner      = meeting.ownerUserId === currentUserId;
+  const isOwner = meeting.ownerUserId === currentUserId;
 
-  const [myInterest,    setMyInterest]    = useState<Interest | undefined>(undefined);
+  const [myInterest,    setMyInterest]    = useState<Interest | null>(null);
   const [interestCount, setInterestCount] = useState(0);
+  const [loading,       setLoading]       = useState(false);
 
-  const loadState = useCallback(() => {
-    setMyInterest(getUserInterest(meeting.id, currentUserId));
-    setInterestCount(getActiveInterests(meeting.id).length);
-  }, [meeting.id, currentUserId]);
+  const loadState = useCallback(async () => {
+    if (!currentUserId) return;
+    const [interest, count] = await Promise.all([
+      isOwner ? Promise.resolve(null) : getUserInterest(meeting.id, currentUserId),
+      getInterestCount(meeting.id),
+    ]);
+    setMyInterest(interest);
+    setInterestCount(count);
+  }, [meeting.id, currentUserId, isOwner]);
 
   useEffect(() => {
     loadState();
-    window.addEventListener(GS_UPDATE_EVENT, loadState);
-    return () => window.removeEventListener(GS_UPDATE_EVENT, loadState);
   }, [loadState]);
 
-  function handleMeldInteresse() {
-    if (isOwner) return;
+  async function handleMeldInteresse() {
+    if (isOwner || loading) return;
     const s = myInterest?.status;
-    if (!s || s === 'rejected') {
-      registerInterest(meeting.id, currentUserId, meeting.ownerUserId);
-    }
+    if (s && s !== 'rejected') return;
+    setLoading(true);
+    await registerInterest(meeting.id, currentUserId, meeting.ownerUserId);
+    await loadState();
+    setLoading(false);
   }
 
-  function handleTrekkTilbake() {
-    withdrawInterest(meeting.id, currentUserId);
+  async function handleTrekkTilbake() {
+    if (loading) return;
+    setLoading(true);
+    await withdrawInterest(meeting.id, currentUserId);
+    setMyInterest(null);
+    setInterestCount((c) => Math.max(0, c - 1));
+    setLoading(false);
   }
 
   function formatDate(iso: string) {
@@ -104,7 +108,6 @@ export default function MeetingCard({ meeting, currentUserId }: Props) {
   const borderClass =
     status === 'approved' ? 'border-green-300 bg-green-50/30 shadow-sm' :
     status === 'pending'  ? 'border-blue-200 bg-blue-50/20' :
-    status === 'rejected' ? 'border-gray-100' :
                             'border-gray-100';
 
   return (
@@ -118,8 +121,8 @@ export default function MeetingCard({ meeting, currentUserId }: Props) {
             📍 {meeting.location} · {formatDate(meeting.startsAt)}
           </p>
         </div>
-        <span className={`shrink-0 text-xs font-medium px-2 py-1 rounded-full ${ownerCompany?.color ?? 'bg-gray-100 text-gray-600'}`}>
-          {ownerCompany?.shortName}
+        <span className={`shrink-0 text-xs font-medium px-2 py-1 rounded-full ${meeting.ownerCompanyColor}`}>
+          {meeting.ownerCompanyShortName}
         </span>
       </div>
 
@@ -130,7 +133,7 @@ export default function MeetingCard({ meeting, currentUserId }: Props) {
       {/* Footer: eier + interesserte + handlingsknapp */}
       <div className="flex items-center justify-between pt-2 border-t border-gray-50 gap-3 flex-wrap">
         <div className="flex items-center gap-3 text-xs text-gray-500">
-          <span>👤 {owner?.name ?? '—'}</span>
+          <span>👤 {meeting.ownerName}</span>
           {interestCount > 0 && (
             <span className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-medium">
               🔥 {interestCount} interessert{interestCount === 1 ? '' : 'e'}
@@ -138,12 +141,12 @@ export default function MeetingCard({ meeting, currentUserId }: Props) {
           )}
         </div>
 
-        {/* Interesse-kontroll */}
         {isOwner ? (
           <span className="text-xs text-gray-400 italic">Ditt møte</span>
         ) : (
           <InterestControl
             status={status}
+            loading={loading}
             onMeld={handleMeldInteresse}
             onTrekkTilbake={handleTrekkTilbake}
             onDownloadICS={() => downloadICS(meeting)}
@@ -154,16 +157,17 @@ export default function MeetingCard({ meeting, currentUserId }: Props) {
   );
 }
 
-// ── Interesse-kontroll-komponent ──────────────────────────
+// ── Interesse-kontroll ────────────────────────────────────
 
 type InterestControlProps = {
   status: Interest['status'] | undefined;
+  loading: boolean;
   onMeld: () => void;
   onTrekkTilbake: () => void;
   onDownloadICS: () => void;
 };
 
-function InterestControl({ status, onMeld, onTrekkTilbake, onDownloadICS }: InterestControlProps) {
+function InterestControl({ status, loading, onMeld, onTrekkTilbake, onDownloadICS }: InterestControlProps) {
   if (status === 'approved') {
     return (
       <div className="flex items-center gap-2 flex-wrap">
@@ -188,7 +192,8 @@ function InterestControl({ status, onMeld, onTrekkTilbake, onDownloadICS }: Inte
         </span>
         <button
           onClick={onTrekkTilbake}
-          className="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2 transition-colors"
+          disabled={loading}
+          className="text-xs text-gray-400 hover:text-gray-600 underline underline-offset-2 transition-colors disabled:opacity-50"
         >
           Trekk tilbake
         </button>
@@ -204,7 +209,8 @@ function InterestControl({ status, onMeld, onTrekkTilbake, onDownloadICS }: Inte
         </span>
         <button
           onClick={onMeld}
-          className="text-xs text-blue-600 hover:text-blue-700 underline underline-offset-2 transition-colors"
+          disabled={loading}
+          className="text-xs text-blue-600 hover:text-blue-700 underline underline-offset-2 transition-colors disabled:opacity-50"
         >
           Meld interesse på nytt
         </button>
@@ -212,13 +218,13 @@ function InterestControl({ status, onMeld, onTrekkTilbake, onDownloadICS }: Inte
     );
   }
 
-  // Ingen aktiv interesse
   return (
     <button
       onClick={onMeld}
-      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-all active:scale-95"
+      disabled={loading}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-all active:scale-95 disabled:opacity-50"
     >
-      + Meld interesse
+      {loading ? '…' : '+ Meld interesse'}
     </button>
   );
 }

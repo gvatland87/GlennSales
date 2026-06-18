@@ -1,310 +1,355 @@
 /**
- * GlennSales — localStorage-basert datalager (demo)
+ * GlennSales — Supabase-basert datalager
  *
- * Mønster: seed fra mock-data ved første besøk, les/skriv fra localStorage.
- * Globalt window-event 'gs-store-update' dispatches ved alle skriveoperasjoner
- * slik at komponenter kan abonnere og re-rendre uten prop-drilling eller Context.
+ * Alle funksjoner er asynkrone og bruker Supabase-klienten.
+ * Kalles fra Client Components via useEffect + useState.
  */
 
+import { createClient } from './supabase/client';
 import type {
   Company,
-  User,
+  Profile,
   Meeting,
+  EnrichedMeeting,
   Interest,
   InterestStatus,
-  Notification,
+  EnrichedInterest,
+  EnrichedNotification,
 } from './types';
-import {
-  COMPANIES,
-  USERS,
-  INITIAL_MEETINGS,
-  INITIAL_INTERESTS,
-  INITIAL_NOTIFICATIONS,
-} from './mock-data';
-
-/** Øk denne når datamodellen endres — tvinger automatisk reset av demo-data */
-const SCHEMA_VERSION = '2';
-
-const KEYS = {
-  currentUserId:  'gs_current_user',
-  companies:      'gs_companies',
-  users:          'gs_users',
-  meetings:       'gs_meetings',
-  interests:      'gs_interests',
-  notifications:  'gs_notifications',
-  schemaVersion:  'gs_schema_version',
-} as const;
-
-export const GS_UPDATE_EVENT = 'gs-store-update';
 
 // ── Hjelpere ──────────────────────────────────────────────
 
-function getAll<T>(key: string): T[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    return JSON.parse(localStorage.getItem(key) ?? '[]') as T[];
-  } catch {
-    return [];
-  }
+function mapMeeting(row: Record<string, unknown>): EnrichedMeeting {
+  const owner = row.owner as Record<string, unknown> | null;
+  const ownerCompany = owner?.companies as Record<string, unknown> | null;
+  return {
+    id:                   row.id as string,
+    ownerUserId:          row.owner_user_id as string,
+    companyId:            row.company_id as string,
+    customerName:         row.customer_name as string,
+    startsAt:             row.starts_at as string,
+    location:             row.location as string,
+    agenda:               (row.agenda as string | null) ?? undefined,
+    status:               row.status as Meeting['status'],
+    ownerName:            (owner?.name as string) ?? '—',
+    ownerCompanyShortName:(ownerCompany?.short_name as string) ?? '',
+    ownerCompanyColor:    (ownerCompany?.color as string) ?? 'bg-gray-100 text-gray-600',
+  };
 }
 
-function setAll<T>(key: string, data: T[]): void {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(key, JSON.stringify(data));
+function mapInterest(row: Record<string, unknown>): EnrichedInterest {
+  const up = row.user_profile as Record<string, unknown> | null;
+  const uc = up?.companies as Record<string, unknown> | null;
+  return {
+    id:                   row.id as string,
+    meetingId:            row.meeting_id as string,
+    userId:               row.user_id as string,
+    createdAt:            row.created_at as string,
+    status:               row.status as InterestStatus,
+    reviewedAt:           (row.reviewed_at as string | null) ?? null,
+    userName:             (up?.name as string) ?? '—',
+    userEmail:            (up?.email as string) ?? '',
+    userCompanyShortName: (uc?.short_name as string) ?? '',
+    userCompanyColor:     (uc?.color as string) ?? 'bg-gray-100 text-gray-600',
+  };
 }
 
-function seed<T>(key: string, data: T[]): void {
-  if (typeof window === 'undefined') return;
-  if (!localStorage.getItem(key)) {
-    localStorage.setItem(key, JSON.stringify(data));
-  }
-}
-
-export function dispatchUpdate(): void {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event(GS_UPDATE_EVENT));
-  }
-}
-
-// ── Init (idempotent) ─────────────────────────────────────
-
-export function initStore(): void {
-  if (typeof window === 'undefined') return;
-
-  // Tving reset av demo-data når datamodellen er endret
-  if (localStorage.getItem(KEYS.schemaVersion) !== SCHEMA_VERSION) {
-    const keysToRemove = [
-      KEYS.companies, KEYS.users, KEYS.meetings,
-      KEYS.interests, KEYS.notifications, KEYS.currentUserId,
-    ] as string[];
-    keysToRemove.forEach((k) => localStorage.removeItem(k));
-    localStorage.setItem(KEYS.schemaVersion, SCHEMA_VERSION);
-  }
-
-  seed(KEYS.companies, COMPANIES);
-  seed(KEYS.users, USERS);
-  seed(KEYS.meetings, INITIAL_MEETINGS);
-  seed(KEYS.interests, INITIAL_INTERESTS);
-  seed(KEYS.notifications, INITIAL_NOTIFICATIONS);
-  if (!localStorage.getItem(KEYS.currentUserId)) {
-    localStorage.setItem(KEYS.currentUserId, 'u-glenn');
-  }
-}
-
-// Kjør gsReset() i DevTools-konsollen for å nullstille demo-data
-if (typeof window !== 'undefined') {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).gsReset = () => {
-    Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
-    location.reload();
+function mapNotification(row: Record<string, unknown>): EnrichedNotification {
+  const fp = row.from_profile as Record<string, unknown> | null;
+  const fc = fp?.companies as Record<string, unknown> | null;
+  const mt = row.meeting as Record<string, unknown> | null;
+  return {
+    id:                       row.id as string,
+    recipientUserId:          row.recipient_user_id as string,
+    fromUserId:               (row.from_user_id as string) ?? '',
+    meetingId:                (row.meeting_id as string) ?? '',
+    type:                     row.type as EnrichedNotification['type'],
+    readAt:                   (row.read_at as string | null) ?? null,
+    createdAt:                row.created_at as string,
+    fromUserName:             (fp?.name as string) ?? 'Noen',
+    fromUserCompanyShortName: (fc?.short_name as string) ?? '',
+    meetingCustomerName:      (mt?.customer_name as string) ?? 'et møte',
   };
 }
 
 // ── Innlogget bruker ──────────────────────────────────────
 
-export function getCurrentUserId(): string {
-  if (typeof window === 'undefined') return 'u-glenn';
-  return localStorage.getItem(KEYS.currentUserId) ?? 'u-glenn';
+export async function getCurrentProfile(): Promise<Profile | null> {
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data } = await supabase
+    .from('profiles')
+    .select('name, email, role, company_id, companies(id, name, short_name, color)')
+    .eq('id', user.id)
+    .single();
+
+  if (!data) return null;
+
+  // Supabase types nested joins as arrays without generated types; handle both cases.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const companyRaw = (data as any).companies;
+  const c: Record<string, string> | null = Array.isArray(companyRaw)
+    ? (companyRaw[0] ?? null)
+    : (companyRaw ?? null);
+
+  return {
+    id:        user.id,
+    email:     user.email ?? '',
+    name:      data.name,
+    role:      data.role as Profile['role'],
+    companyId: data.company_id,
+    company:   c ? { id: c.id, name: c.name, shortName: c.short_name, color: c.color } : null,
+  };
 }
 
-export function setCurrentUserId(id: string): void {
-  localStorage.setItem(KEYS.currentUserId, id);
-  dispatchUpdate();
+export async function logout(): Promise<void> {
+  const supabase = createClient();
+  await supabase.auth.signOut();
 }
 
 // ── Selskaper ─────────────────────────────────────────────
 
-export function getCompanies(): Company[] {
-  return getAll<Company>(KEYS.companies);
-}
-
-export function getCompany(id: string): Company | undefined {
-  return getCompanies().find((c) => c.id === id);
-}
-
-// ── Brukere ───────────────────────────────────────────────
-
-export function getUsers(): User[] {
-  return getAll<User>(KEYS.users);
-}
-
-export function getUser(id: string): User | undefined {
-  return getUsers().find((u) => u.id === id);
+export async function getCompanies(): Promise<Company[]> {
+  const supabase = createClient();
+  const { data } = await supabase.from('companies').select('*').order('name');
+  return (data ?? []).map((row) => ({
+    id:        row.id,
+    name:      row.name,
+    shortName: row.short_name,
+    color:     row.color,
+  }));
 }
 
 // ── Møter ─────────────────────────────────────────────────
 
-export function getMeetings(): Meeting[] {
-  return getAll<Meeting>(KEYS.meetings)
-    .filter((m) => m.status === 'active')
-    .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+/** Alle aktive møter med eier-info — brukes i /meetings */
+export async function getMeetings(): Promise<EnrichedMeeting[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('meetings')
+    .select(`
+      id, owner_user_id, company_id, customer_name, starts_at, location, agenda, status,
+      owner:profiles!owner_user_id (name, companies (short_name, color))
+    `)
+    .eq('status', 'active')
+    .order('starts_at', { ascending: true });
+  return (data ?? []).map(mapMeeting);
 }
 
-export function addMeeting(meeting: Meeting): void {
-  const all = getAll<Meeting>(KEYS.meetings);
-  setAll(KEYS.meetings, [...all, meeting]);
-  dispatchUpdate();
+/** Møter eiet av én bruker — brukes i /mine */
+export async function getMyMeetings(userId: string): Promise<EnrichedMeeting[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('meetings')
+    .select(`
+      id, owner_user_id, company_id, customer_name, starts_at, location, agenda, status,
+      owner:profiles!owner_user_id (name, companies (short_name, color))
+    `)
+    .eq('owner_user_id', userId)
+    .eq('status', 'active')
+    .order('starts_at', { ascending: true });
+  return (data ?? []).map(mapMeeting);
+}
+
+export async function addMeeting(input: {
+  ownerUserId: string;
+  companyId:   string;
+  customerName:string;
+  startsAt:    string;
+  location:    string;
+  agenda?:     string;
+}): Promise<void> {
+  const supabase = createClient();
+  await supabase.from('meetings').insert({
+    owner_user_id: input.ownerUserId,
+    company_id:    input.companyId,
+    customer_name: input.customerName,
+    starts_at:     input.startsAt,
+    location:      input.location,
+    agenda:        input.agenda ?? null,
+    status:        'active',
+  });
 }
 
 // ── Interessemeldinger ────────────────────────────────────
 
-/**
- * Returnerer pending + approved interesser for et møte.
- * Brukes til: antall-badge i MeetingCard og interesseliste i Mine møter.
- */
-export function getActiveInterests(meetingId: string): Interest[] {
-  return getAll<Interest>(KEYS.interests).filter(
-    (i) =>
-      i.meetingId === meetingId &&
-      (i.status === 'pending' || i.status === 'approved')
-  );
+/** Pending + approved interesser for ett møte (med brukerinfo) */
+export async function getActiveInterests(meetingId: string): Promise<EnrichedInterest[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('meeting_interests')
+    .select(`
+      id, meeting_id, user_id, status, reviewed_at, created_at,
+      user_profile:profiles!user_id (name, email, companies (short_name, color))
+    `)
+    .eq('meeting_id', meetingId)
+    .in('status', ['pending', 'approved'])
+    .order('created_at', { ascending: true });
+  return (data ?? []).map(mapInterest);
 }
 
-/**
- * Returnerer brukerens siste gjeldende interesse for et møte.
- * Inkluderer rejected (så bruker ser «Avslått»), ekskluderer withdrawn.
- */
-export function getUserInterest(
+/** Antall aktive interesser for ett møte (for badge-visning) */
+export async function getInterestCount(meetingId: string): Promise<number> {
+  const supabase = createClient();
+  const { count } = await supabase
+    .from('meeting_interests')
+    .select('*', { count: 'exact', head: true })
+    .eq('meeting_id', meetingId)
+    .in('status', ['pending', 'approved']);
+  return count ?? 0;
+}
+
+/** Brukerens gjeldende interesse for ett møte (ekskluderer withdrawn) */
+export async function getUserInterest(
   meetingId: string,
   userId: string
-): Interest | undefined {
-  const matches = getAll<Interest>(KEYS.interests).filter(
-    (i) =>
-      i.meetingId === meetingId &&
-      i.userId === userId &&
-      i.status !== 'withdrawn'
-  );
-  return matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+): Promise<Interest | null> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('meeting_interests')
+    .select('id, meeting_id, user_id, status, reviewed_at, created_at')
+    .eq('meeting_id', meetingId)
+    .eq('user_id', userId)
+    .neq('status', 'withdrawn')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!data) return null;
+  return {
+    id:         data.id,
+    meetingId:  data.meeting_id,
+    userId:     data.user_id,
+    status:     data.status as InterestStatus,
+    reviewedAt: data.reviewed_at,
+    createdAt:  data.created_at,
+  };
 }
 
-export function registerInterest(
-  meetingId: string,
-  userId: string,
+/**
+ * Meld interesse — bruker upsert så én bruker alltid har én rad per møte.
+ * Re-aktiverer en eventuelt avslått eller trukket interesse.
+ */
+export async function registerInterest(
+  meetingId:   string,
+  userId:      string,
   ownerUserId: string
-): void {
-  const interest: Interest = {
-    id:         `i-${Date.now()}`,
-    meetingId,
-    userId,
-    createdAt:  new Date().toISOString(),
-    status:     'pending',
-    reviewedAt: null,
-  };
-  const allInterests = getAll<Interest>(KEYS.interests);
-  setAll(KEYS.interests, [...allInterests, interest]);
+): Promise<void> {
+  const supabase = createClient();
 
-  // Varsel til møteeier
-  const notification: Notification = {
-    id:              `n-${Date.now()}`,
-    recipientUserId: ownerUserId,
-    fromUserId:      userId,
-    meetingId,
-    type:            'new_interest',
-    readAt:          null,
-    createdAt:       new Date().toISOString(),
-  };
-  const allNotifs = getAll<Notification>(KEYS.notifications);
-  setAll(KEYS.notifications, [...allNotifs, notification]);
-
-  dispatchUpdate();
-}
-
-export function withdrawInterest(meetingId: string, userId: string): void {
-  const all = getAll<Interest>(KEYS.interests);
-  const updated = all.map((i) =>
-    i.meetingId === meetingId &&
-    i.userId === userId &&
-    (i.status === 'pending' || i.status === 'approved')
-      ? { ...i, status: 'withdrawn' as InterestStatus, reviewedAt: new Date().toISOString() }
-      : i
+  await supabase.from('meeting_interests').upsert(
+    {
+      meeting_id:  meetingId,
+      user_id:     userId,
+      status:      'pending',
+      reviewed_at: null,
+      created_at:  new Date().toISOString(),
+    },
+    { onConflict: 'meeting_id,user_id' }
   );
-  setAll(KEYS.interests, updated);
-  dispatchUpdate();
+
+  // Varsel til møteeier (from_user_id = innlogget bruker, policy-krav)
+  await supabase.from('notifications').insert({
+    recipient_user_id: ownerUserId,
+    from_user_id:      userId,
+    meeting_id:        meetingId,
+    type:              'new_interest',
+  });
 }
 
-/** Eier godkjenner en interessemelding → interessent får varsel + kan legge til kalender */
-export function approveInterest(interestId: string, ownerUserId: string): void {
-  const all      = getAll<Interest>(KEYS.interests);
-  const interest = all.find((i) => i.id === interestId);
+export async function withdrawInterest(meetingId: string, userId: string): Promise<void> {
+  const supabase = createClient();
+  await supabase
+    .from('meeting_interests')
+    .update({ status: 'withdrawn', reviewed_at: new Date().toISOString() })
+    .eq('meeting_id', meetingId)
+    .eq('user_id', userId)
+    .in('status', ['pending', 'approved']);
+}
+
+/** Møteeier godkjenner interesse */
+export async function approveInterest(interestId: string, ownerUserId: string): Promise<void> {
+  const supabase = createClient();
+
+  const { data: interest } = await supabase
+    .from('meeting_interests')
+    .select('user_id, meeting_id')
+    .eq('id', interestId)
+    .single();
+
   if (!interest) return;
 
-  setAll(
-    KEYS.interests,
-    all.map((i) =>
-      i.id === interestId
-        ? { ...i, status: 'approved' as InterestStatus, reviewedAt: new Date().toISOString() }
-        : i
-    )
-  );
+  await supabase
+    .from('meeting_interests')
+    .update({ status: 'approved', reviewed_at: new Date().toISOString() })
+    .eq('id', interestId);
 
-  // Varsel til interessenten: godkjent!
-  const notification: Notification = {
-    id:              `n-${Date.now()}`,
-    recipientUserId: interest.userId,
-    fromUserId:      ownerUserId,
-    meetingId:       interest.meetingId,
-    type:            'interest_approved',
-    readAt:          null,
-    createdAt:       new Date().toISOString(),
-  };
-  const allNotifs = getAll<Notification>(KEYS.notifications);
-  setAll(KEYS.notifications, [...allNotifs, notification]);
-
-  dispatchUpdate();
+  await supabase.from('notifications').insert({
+    recipient_user_id: interest.user_id,
+    from_user_id:      ownerUserId,
+    meeting_id:        interest.meeting_id,
+    type:              'interest_approved',
+  });
 }
 
-/** Eier avslår en interessemelding → interessent får varsel */
-export function rejectInterest(interestId: string, ownerUserId: string): void {
-  const all      = getAll<Interest>(KEYS.interests);
-  const interest = all.find((i) => i.id === interestId);
+/** Møteeier avslår interesse */
+export async function rejectInterest(interestId: string, ownerUserId: string): Promise<void> {
+  const supabase = createClient();
+
+  const { data: interest } = await supabase
+    .from('meeting_interests')
+    .select('user_id, meeting_id')
+    .eq('id', interestId)
+    .single();
+
   if (!interest) return;
 
-  setAll(
-    KEYS.interests,
-    all.map((i) =>
-      i.id === interestId
-        ? { ...i, status: 'rejected' as InterestStatus, reviewedAt: new Date().toISOString() }
-        : i
-    )
-  );
+  await supabase
+    .from('meeting_interests')
+    .update({ status: 'rejected', reviewed_at: new Date().toISOString() })
+    .eq('id', interestId);
 
-  // Varsel til interessenten: avslått
-  const notification: Notification = {
-    id:              `n-${Date.now() + 1}`,
-    recipientUserId: interest.userId,
-    fromUserId:      ownerUserId,
-    meetingId:       interest.meetingId,
-    type:            'interest_rejected',
-    readAt:          null,
-    createdAt:       new Date().toISOString(),
-  };
-  const allNotifs = getAll<Notification>(KEYS.notifications);
-  setAll(KEYS.notifications, [...allNotifs, notification]);
-
-  dispatchUpdate();
+  await supabase.from('notifications').insert({
+    recipient_user_id: interest.user_id,
+    from_user_id:      ownerUserId,
+    meeting_id:        interest.meeting_id,
+    type:              'interest_rejected',
+  });
 }
 
 // ── Varsler ───────────────────────────────────────────────
 
-export function getNotificationsForUser(userId: string): Notification[] {
-  return getAll<Notification>(KEYS.notifications)
-    .filter((n) => n.recipientUserId === userId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+export async function getNotificationsForUser(userId: string): Promise<EnrichedNotification[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('notifications')
+    .select(`
+      id, recipient_user_id, from_user_id, meeting_id, type, read_at, created_at,
+      from_profile:profiles!from_user_id (name, companies (short_name)),
+      meeting:meetings!meeting_id (customer_name)
+    `)
+    .eq('recipient_user_id', userId)
+    .order('created_at', { ascending: false });
+  return (data ?? []).map(mapNotification);
 }
 
-export function getUnreadCount(userId: string): number {
-  return getAll<Notification>(KEYS.notifications).filter(
-    (n) => n.recipientUserId === userId && n.readAt === null
-  ).length;
+export async function getUnreadCount(userId: string): Promise<number> {
+  const supabase = createClient();
+  const { count } = await supabase
+    .from('notifications')
+    .select('*', { count: 'exact', head: true })
+    .eq('recipient_user_id', userId)
+    .is('read_at', null);
+  return count ?? 0;
 }
 
-export function markAllRead(userId: string): void {
-  const all = getAll<Notification>(KEYS.notifications);
-  const updated = all.map((n) =>
-    n.recipientUserId === userId && n.readAt === null
-      ? { ...n, readAt: new Date().toISOString() }
-      : n
-  );
-  setAll(KEYS.notifications, updated);
-  dispatchUpdate();
+export async function markAllRead(userId: string): Promise<void> {
+  const supabase = createClient();
+  await supabase
+    .from('notifications')
+    .update({ read_at: new Date().toISOString() })
+    .eq('recipient_user_id', userId)
+    .is('read_at', null);
 }

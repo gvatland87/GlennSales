@@ -3,34 +3,36 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
-  initStore,
-  getMeetings,
-  getCurrentUserId,
+  getCurrentProfile,
+  getMyMeetings,
   getActiveInterests,
-  getUser,
-  getCompany,
   approveInterest,
   rejectInterest,
-  GS_UPDATE_EVENT,
 } from '@/lib/store';
-import type { Interest, Meeting } from '@/lib/types';
+import type { EnrichedMeeting, EnrichedInterest, Profile } from '@/lib/types';
 
 export default function MineMoeterPage() {
-  const [myMeetings,    setMyMeetings]    = useState<Meeting[]>([]);
-  const [currentUserId, setCurrentUserId] = useState('');
-
-  function loadData() {
-    const uid = getCurrentUserId();
-    setCurrentUserId(uid);
-    setMyMeetings(getMeetings().filter((m) => m.ownerUserId === uid));
-  }
+  const [profile,    setProfile]    = useState<Profile | null>(null);
+  const [myMeetings, setMyMeetings] = useState<EnrichedMeeting[]>([]);
+  const [loading,    setLoading]    = useState(true);
 
   useEffect(() => {
-    initStore();
-    loadData();
-    window.addEventListener(GS_UPDATE_EVENT, loadData);
-    return () => window.removeEventListener(GS_UPDATE_EVENT, loadData);
+    async function load() {
+      const p = await getCurrentProfile();
+      setProfile(p);
+      if (p?.id) {
+        const meetings = await getMyMeetings(p.id);
+        setMyMeetings(meetings);
+      }
+      setLoading(false);
+    }
+    load();
   }, []);
+
+  async function refreshMeetings() {
+    if (!profile?.id) return;
+    setMyMeetings(await getMyMeetings(profile.id));
+  }
 
   function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString('nb-NO', {
@@ -46,13 +48,13 @@ export default function MineMoeterPage() {
     });
   }
 
-  const currentUser    = getUser(currentUserId);
-  const currentCompany = currentUser ? getCompany(currentUser.companyId) : null;
-
-  const pendingTotal = myMeetings.reduce(
-    (sum, m) => sum + getActiveInterests(m.id).filter((i) => i.status === 'pending').length,
-    0
-  );
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-32 text-gray-400 text-sm">
+        Laster møter…
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -64,29 +66,22 @@ export default function MineMoeterPage() {
             Godkjenn eller avslå interessemeldinger fra andre selskaper
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          {pendingTotal > 0 && (
-            <span className="bg-amber-100 text-amber-800 text-sm font-semibold px-3 py-1.5 rounded-full">
-              {pendingTotal} venter
-            </span>
-          )}
-          <Link
-            href="/meetings/ny"
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
-          >
-            + Nytt møte
-          </Link>
-        </div>
+        <Link
+          href="/meetings/ny"
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
+        >
+          + Nytt møte
+        </Link>
       </div>
 
       {/* Innlogget-info */}
-      {currentUser && currentCompany && (
-        <div className={`mb-6 px-4 py-3 rounded-xl text-sm flex items-center gap-2 ${currentCompany.color}`}>
-          <span className="font-semibold">{currentUser.name}</span>
+      {profile?.company && (
+        <div className={`mb-6 px-4 py-3 rounded-xl text-sm flex items-center gap-2 ${profile.company.color}`}>
+          <span className="font-semibold">{profile.name}</span>
           <span>·</span>
-          <span>{currentCompany.name}</span>
+          <span>{profile.company.name}</span>
           <span>·</span>
-          <span className="capitalize">{currentUser.role}</span>
+          <span className="capitalize">{profile.role}</span>
         </div>
       )}
 
@@ -106,9 +101,10 @@ export default function MineMoeterPage() {
             <MeetingWithInterests
               key={m.id}
               meeting={m}
-              currentUserId={currentUserId}
+              currentUserId={profile?.id ?? ''}
               formatDate={formatDate}
               formatShort={formatShort}
+              onUpdate={refreshMeetings}
             />
           ))}
         </div>
@@ -124,34 +120,44 @@ function MeetingWithInterests({
   currentUserId,
   formatDate,
   formatShort,
+  onUpdate,
 }: {
-  meeting: Meeting;
+  meeting:       EnrichedMeeting;
   currentUserId: string;
-  formatDate: (s: string) => string;
-  formatShort: (s: string) => string;
+  formatDate:    (s: string) => string;
+  formatShort:   (s: string) => string;
+  onUpdate:      () => void;
 }) {
-  const [interests, setInterests] = useState<Interest[]>([]);
+  const [interests, setInterests] = useState<EnrichedInterest[]>([]);
+  const [loading,   setLoading]   = useState(false);
 
-  function loadInterests() {
-    setInterests(getActiveInterests(meeting.id));
+  async function loadInterests() {
+    setInterests(await getActiveInterests(meeting.id));
   }
 
   useEffect(() => {
     loadInterests();
-    window.addEventListener(GS_UPDATE_EVENT, loadInterests);
-    return () => window.removeEventListener(GS_UPDATE_EVENT, loadInterests);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting.id]);
 
   const pending  = interests.filter((i) => i.status === 'pending');
   const approved = interests.filter((i) => i.status === 'approved');
 
-  function handleApprove(interest: Interest) {
-    approveInterest(interest.id, currentUserId);
+  async function handleApprove(interest: EnrichedInterest) {
+    if (loading) return;
+    setLoading(true);
+    await approveInterest(interest.id, currentUserId);
+    await loadInterests();
+    onUpdate();
+    setLoading(false);
   }
 
-  function handleReject(interest: Interest) {
-    rejectInterest(interest.id, currentUserId);
+  async function handleReject(interest: EnrichedInterest) {
+    if (loading) return;
+    setLoading(true);
+    await rejectInterest(interest.id, currentUserId);
+    await loadInterests();
+    setLoading(false);
   }
 
   return (
@@ -181,7 +187,7 @@ function MeetingWithInterests({
         </div>
       </div>
 
-      {/* ── Venter på godkjenning ── */}
+      {/* Venter på godkjenning */}
       {pending.length > 0 && (
         <section className="mb-4">
           <h4 className="text-xs font-bold text-amber-700 uppercase tracking-wider mb-3 flex items-center gap-1.5">
@@ -197,13 +203,15 @@ function MeetingWithInterests({
                   <div className="flex gap-2 shrink-0">
                     <button
                       onClick={() => handleApprove(interest)}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-700 transition-all active:scale-95 shadow-sm"
+                      disabled={loading}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-700 transition-all active:scale-95 shadow-sm disabled:opacity-50"
                     >
                       ✓ Godkjenn
                     </button>
                     <button
                       onClick={() => handleReject(interest)}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-red-200 text-red-600 hover:bg-red-50 transition-all active:scale-95"
+                      disabled={loading}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-red-200 text-red-600 hover:bg-red-50 transition-all active:scale-95 disabled:opacity-50"
                     >
                       ✕ Avslå
                     </button>
@@ -215,7 +223,7 @@ function MeetingWithInterests({
         </section>
       )}
 
-      {/* ── Godkjente interesser ── */}
+      {/* Godkjente */}
       {approved.length > 0 && (
         <section className={pending.length > 0 ? 'border-t border-gray-50 pt-4' : ''}>
           <h4 className="text-xs font-bold text-green-700 uppercase tracking-wider mb-3 flex items-center gap-1.5">
@@ -238,7 +246,6 @@ function MeetingWithInterests({
         </section>
       )}
 
-      {/* Tom tilstand */}
       {interests.length === 0 && (
         <div className="border-t border-gray-50 pt-4">
           <p className="text-sm text-gray-400 italic">
@@ -257,40 +264,30 @@ function InterestRow({
   formatShort,
   actions,
 }: {
-  interest: Interest;
+  interest:    EnrichedInterest;
   formatShort: (s: string) => string;
-  actions: React.ReactNode;
+  actions:     React.ReactNode;
 }) {
-  const person        = getUser(interest.userId);
-  const personCompany = person ? getCompany(person.companyId) : null;
-
   return (
     <li className="flex items-center gap-3">
-      {/* Avatar */}
       <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center font-semibold text-gray-600 text-xs shrink-0">
-        {person?.name?.charAt(0) ?? '?'}
+        {interest.userName?.charAt(0) ?? '?'}
       </div>
-
-      {/* Navn + selskap */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium text-gray-800">{person?.name ?? 'Ukjent'}</span>
-          {personCompany && (
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${personCompany.color}`}>
-              {personCompany.shortName}
+          <span className="text-sm font-medium text-gray-800">{interest.userName}</span>
+          {interest.userCompanyShortName && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${interest.userCompanyColor}`}>
+              {interest.userCompanyShortName}
             </span>
           )}
         </div>
-        {person && (
-          <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-2">
-            <span>{person.email}</span>
-            <span>·</span>
-            <span>{formatShort(interest.createdAt)}</span>
-          </p>
-        )}
+        <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-2">
+          {interest.userEmail && <span>{interest.userEmail}</span>}
+          {interest.userEmail && <span>·</span>}
+          <span>{formatShort(interest.createdAt)}</span>
+        </p>
       </div>
-
-      {/* Handlingsknapper */}
       {actions}
     </li>
   );

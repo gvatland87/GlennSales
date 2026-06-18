@@ -1,39 +1,37 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { addMeeting, getCurrentUserId, getUser, getCompany } from '@/lib/store';
-import type { Meeting } from '@/lib/types';
+import { addMeeting, getCurrentProfile } from '@/lib/store';
+import type { Profile } from '@/lib/types';
 
 export default function NyttMotePage() {
   const router = useRouter();
+  const [profile,      setProfile]      = useState<Profile | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [startsAt,     setStartsAt]     = useState('');
   const [location,     setLocation]     = useState('');
   const [agenda,       setAgenda]       = useState('');
   const [saving,       setSaving]       = useState(false);
 
-  const currentUserId = getCurrentUserId();
-  const user          = getUser(currentUserId);
-  const company       = user ? getCompany(user.companyId) : null;
+  useEffect(() => {
+    getCurrentProfile().then(setProfile);
+  }, []);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!customerName.trim() || !startsAt || !location.trim() || !user) return;
+    if (!customerName.trim() || !startsAt || !location.trim() || !profile?.companyId) return;
     setSaving(true);
 
-    const meeting: Meeting = {
-      id:           `m-${Date.now()}`,
-      ownerUserId:  currentUserId,
-      companyId:    user.companyId,
+    await addMeeting({
+      ownerUserId:  profile.id,
+      companyId:    profile.companyId,
       customerName: customerName.trim(),
       startsAt:     new Date(startsAt).toISOString(),
       location:     location.trim(),
       agenda:       agenda.trim() || undefined,
-      status:       'active',
-    };
+    });
 
-    addMeeting(meeting);
     router.push('/meetings');
   }
 
@@ -41,13 +39,13 @@ export default function NyttMotePage() {
     <div className="max-w-lg">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Nytt møte</h1>
-        {user && company && (
+        {profile?.company && (
           <p className="text-sm text-gray-500 mt-1">
             Som{' '}
-            <span className={`font-medium text-xs px-2 py-0.5 rounded-full ${company.color}`}>
-              {company.shortName}
+            <span className={`font-medium text-xs px-2 py-0.5 rounded-full ${profile.company.color}`}>
+              {profile.company.shortName}
             </span>{' '}
-            · {user.name}
+            · {profile.name}
           </p>
         )}
       </div>
@@ -121,7 +119,7 @@ export default function NyttMotePage() {
           </button>
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || !profile}
             className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-60 transition-colors shadow-sm"
           >
             {saving ? 'Lagrer...' : 'Opprett møte'}

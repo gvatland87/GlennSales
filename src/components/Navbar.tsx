@@ -2,73 +2,108 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabase/client';
 import {
-  initStore,
-  getUsers,
-  getCompany,
-  getUser,
-  getCurrentUserId,
-  setCurrentUserId,
+  getCurrentProfile,
   getNotificationsForUser,
   getUnreadCount,
   markAllRead,
-  getMeetings,
-  GS_UPDATE_EVENT,
+  logout,
 } from '@/lib/store';
-import type { User, Notification } from '@/lib/types';
+import type { Profile, EnrichedNotification } from '@/lib/types';
 
 export default function Navbar() {
-  const pathname = usePathname();
-  const [currentUser, setCurrentUser]   = useState<User | null>(null);
-  const [users, setUsers]               = useState<User[]>([]);
-  const [unreadCount, setUnreadCount]   = useState(0);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [showNotifs, setShowNotifs]     = useState(false);
-  const notifRef = useRef<HTMLDivElement>(null);
+  const pathname  = usePathname();
+  const router    = useRouter();
 
-  function loadData() {
-    const uid    = getCurrentUserId();
-    const allUsers = getUsers();
-    const me     = allUsers.find((u) => u.id === uid) ?? allUsers[0];
-    setCurrentUser(me);
-    setUsers(allUsers);
-    if (me) {
-      setUnreadCount(getUnreadCount(me.id));
-      setNotifications(getNotificationsForUser(me.id));
+  // Ikke vis Navbar på auth-sider
+  if (pathname.startsWith('/auth')) return null;
+  const notifRef  = useRef<HTMLDivElement>(null);
+
+  const [profile,       setProfile]       = useState<Profile | null>(null);
+  const [unreadCount,   setUnreadCount]   = useState(0);
+  const [notifications, setNotifications] = useState<EnrichedNotification[]>([]);
+  const [showNotifs,    setShowNotifs]    = useState(false);
+
+  async function loadData() {
+    const p = await getCurrentProfile();
+    setProfile(p);
+    if (p?.id) {
+      const [count, notifs] = await Promise.all([
+        getUnreadCount(p.id),
+        getNotificationsForUser(p.id),
+      ]);
+      setUnreadCount(count);
+      setNotifications(notifs);
     }
   }
 
   useEffect(() => {
-    initStore();
     loadData();
-    window.addEventListener(GS_UPDATE_EVENT, loadData);
-    return () => window.removeEventListener(GS_UPDATE_EVENT, loadData);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [pathname]); // last på nytt ved sideskift
+
+  // Supabase Realtime — live varsel-oppdatering
+  useEffect(() => {
+    if (!profile?.id) return;
+    const supabase = createClient();
+
+    const channel = supabase
+      .channel(`navbar-notifs-${profile.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications',
+          filter: `recipient_user_id=eq.${profile.id}`,
+        },
+        () => { loadData(); }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id]);
 
   // Lukk varselpanel ved klikk utenfor
   useEffect(() => {
-    function handleOutsideClick(e: MouseEvent) {
+    function handleOutside(e: MouseEvent) {
       if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
         setShowNotifs(false);
       }
     }
-    document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
 
-  function handleUserSwitch(e: React.ChangeEvent<HTMLSelectElement>) {
-    setCurrentUserId(e.target.value);
-    setShowNotifs(false);
-  }
-
-  function handleOpenNotifs() {
+  async function handleOpenNotifs() {
     const next = !showNotifs;
     setShowNotifs(next);
-    if (next && currentUser) {
-      markAllRead(currentUser.id);
+    if (next && profile?.id) {
+      await markAllRead(profile.id);
+      setUnreadCount(0);
+      setNotifications((prev) => prev.map((n) => ({ ...n, readAt: n.readAt ?? new Date().toISOString() })));
     }
+  }
+
+  async function handleLogout() {
+    await logout();
+    router.push('/auth/logg-inn');
+    router.refresh();
+  }
+
+  function notifText(n: EnrichedNotification): string {
+    const who = n.fromUserCompanyShortName
+      ? `${n.fromUserName} (${n.fromUserCompanyShortName})`
+      : n.fromUserName;
+
+    if (n.type === 'interest_approved')
+      return `✅ ${who} godkjente interessen din for møtet med ${n.meetingCustomerName}`;
+    if (n.type === 'interest_rejected')
+      return `❌ ${who} avslo interessen din for møtet med ${n.meetingCustomerName}`;
+    return `${who} har meldt interesse i møtet ditt med ${n.meetingCustomerName}`;
   }
 
   function formatTs(iso: string) {
@@ -77,34 +112,6 @@ export default function Navbar() {
       hour: '2-digit', minute: '2-digit',
     });
   }
-
-  function notifText(n: Notification): string {
-    const from        = getUser(n.fromUserId);
-    const fromCompany = from ? getCompany(from.companyId) : null;
-    const meeting     = getMeetings().find((m) => m.id === n.meetingId);
-    const who         = from
-      ? `${from.name}${fromCompany ? ` (${fromCompany.shortName})` : ''}`
-      : 'Noen';
-    const customer = meeting?.customerName ?? 'et møte';
-
-    if (n.type === 'interest_approved') {
-      return `✅ ${who} godkjente interessen din for møtet med ${customer}`;
-    }
-    if (n.type === 'interest_rejected') {
-      return `❌ ${who} avslo interessen din for møtet med ${customer}`;
-    }
-    // new_interest
-    return `${who} har meldt interesse i møtet ditt med ${customer}`;
-  }
-
-  const currentCompany = currentUser ? getCompany(currentUser.companyId) : null;
-
-  // Grupper brukere per selskap for <optgroup>
-  const usersByCompany = users.reduce<Record<string, User[]>>((acc, u) => {
-    const cn = getCompany(u.companyId)?.shortName ?? u.companyId;
-    (acc[cn] = acc[cn] ?? []).push(u);
-    return acc;
-  }, {});
 
   function navCls(href: string) {
     return `px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -130,27 +137,20 @@ export default function Navbar() {
           </div>
         </div>
 
-        {/* Brukerbytte + varsler */}
+        {/* Bruker + varsler + logg ut */}
         <div className="flex items-center gap-3">
-          {currentUser && (
+
+          {/* Bruker-badge */}
+          {profile && (
             <div className="flex items-center gap-2">
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${currentCompany?.color ?? 'bg-gray-100 text-gray-600'}`}>
-                {currentCompany?.shortName}
+              {profile.company && (
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${profile.company.color}`}>
+                  {profile.company.shortName}
+                </span>
+              )}
+              <span className="text-sm font-medium text-gray-700 hidden sm:block">
+                {profile.name}
               </span>
-              <select
-                value={currentUser.id}
-                onChange={handleUserSwitch}
-                className="text-sm border border-gray-200 rounded-lg px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                title="Bytt demo-bruker"
-              >
-                {Object.entries(usersByCompany).map(([companyName, companyUsers]) => (
-                  <optgroup key={companyName} label={companyName}>
-                    {companyUsers.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
             </div>
           )}
 
@@ -195,12 +195,15 @@ export default function Navbar() {
               </div>
             )}
           </div>
-        </div>
-      </div>
 
-      {/* Demo-banner */}
-      <div className="bg-amber-50 border-t border-amber-100 text-center text-xs text-amber-700 py-1 px-4">
-        🧪 Demo — bytt bruker i rullegardinmenyen for å simulere ulike selskaper · Kjør <code className="font-mono bg-amber-100 px-1 rounded">gsReset()</code> i konsollen for å tømme data
+          {/* Logg ut */}
+          <button
+            onClick={handleLogout}
+            className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 hover:border-gray-300 px-3 py-1.5 rounded-lg transition-colors"
+          >
+            Logg ut
+          </button>
+        </div>
       </div>
     </nav>
   );

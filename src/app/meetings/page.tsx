@@ -2,38 +2,43 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import {
-  initStore,
-  getMeetings,
-  getCurrentUserId,
-  getCompanies,
-  GS_UPDATE_EVENT,
-} from '@/lib/store';
-import type { Company, Meeting } from '@/lib/types';
+import { getMeetings, getCompanies, getCurrentProfile } from '@/lib/store';
+import type { Company, EnrichedMeeting } from '@/lib/types';
 import MeetingCard from '@/components/MeetingCard';
 
 export default function MeetingsPage() {
-  const [meetings,         setMeetings]        = useState<Meeting[]>([]);
-  const [companies,        setCompanies]       = useState<Company[]>([]);
-  const [selectedCompany,  setSelectedCompany] = useState<string>('all');
-  const [currentUserId,    setCurrentUserId]   = useState<string>('');
-
-  function loadData() {
-    setMeetings(getMeetings());
-    setCompanies(getCompanies());
-    setCurrentUserId(getCurrentUserId());
-  }
+  const [meetings,        setMeetings]       = useState<EnrichedMeeting[]>([]);
+  const [companies,       setCompanies]      = useState<Company[]>([]);
+  const [selectedCompany, setSelectedCompany]= useState<string>('all');
+  const [currentUserId,   setCurrentUserId]  = useState<string>('');
+  const [loading,         setLoading]        = useState(true);
 
   useEffect(() => {
-    initStore();
-    loadData();
-    window.addEventListener(GS_UPDATE_EVENT, loadData);
-    return () => window.removeEventListener(GS_UPDATE_EVENT, loadData);
+    async function load() {
+      const [meetings, companies, profile] = await Promise.all([
+        getMeetings(),
+        getCompanies(),
+        getCurrentProfile(),
+      ]);
+      setMeetings(meetings);
+      setCompanies(companies);
+      setCurrentUserId(profile?.id ?? '');
+      setLoading(false);
+    }
+    load();
   }, []);
 
   const filtered = selectedCompany === 'all'
     ? meetings
     : meetings.filter((m) => m.companyId === selectedCompany);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-32 text-gray-400 text-sm">
+        Laster møteplan…
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -91,7 +96,7 @@ export default function MeetingsPage() {
       ) : (
         <div className="grid gap-4">
           {filtered.map((m) => (
-            <MeetingCard key={`${m.id}-${currentUserId}`} meeting={m} currentUserId={currentUserId} />
+            <MeetingCard key={m.id} meeting={m} currentUserId={currentUserId} />
           ))}
         </div>
       )}
