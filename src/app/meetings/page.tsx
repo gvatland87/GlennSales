@@ -76,7 +76,7 @@ export default function MeetingsPage() {
             className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
               selectedCompany === c.id
                 ? 'bg-gray-900 text-white'
-                : `${c.color} hover:opacity-80`
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}
           >
             {c.shortName}
