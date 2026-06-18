@@ -36,12 +36,30 @@ export default function LoggInnPage() {
       <div className="w-full max-w-sm">
 
         {/* Logo */}
-        <div className="text-center mb-8">
+        <div className="text-center mb-6">
           <span className="text-3xl font-bold tracking-tight">
             <span className="text-blue-600">Glenn</span>
             <span className="text-gray-900">Sales</span>
           </span>
-          <p className="text-gray-500 text-sm mt-2">Logg inn på kontoen din</p>
+          <p className="text-gray-500 text-sm mt-2">Koordinering av kundemøter på tvers av GMC-gruppen</p>
+        </div>
+
+        {/* Kort forklaring */}
+        <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-4 mb-6">
+          <ul className="space-y-2">
+            <li className="flex items-start gap-2 text-sm text-blue-900">
+              <span className="mt-0.5 text-blue-500">✓</span>
+              Se alle kundemøter fra GMC-selskapene på ett sted
+            </li>
+            <li className="flex items-start gap-2 text-sm text-blue-900">
+              <span className="mt-0.5 text-blue-500">✓</span>
+              Meld interesse for møter du ønsker å delta på
+            </li>
+            <li className="flex items-start gap-2 text-sm text-blue-900">
+              <span className="mt-0.5 text-blue-500">✓</span>
+              Godkjenn eller avslå deltakere i dine egne møter
+            </li>
+          </ul>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
