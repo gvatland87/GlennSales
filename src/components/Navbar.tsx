@@ -16,15 +16,15 @@ import type { Profile, EnrichedNotification } from '@/lib/types';
 export default function Navbar() {
   const pathname  = usePathname();
   const router    = useRouter();
-
-  // Ikke vis Navbar på auth-sider
-  if (pathname.startsWith('/auth')) return null;
   const notifRef  = useRef<HTMLDivElement>(null);
 
   const [profile,       setProfile]       = useState<Profile | null>(null);
   const [unreadCount,   setUnreadCount]   = useState(0);
   const [notifications, setNotifications] = useState<EnrichedNotification[]>([]);
   const [showNotifs,    setShowNotifs]    = useState(false);
+
+  // Ikke vis Navbar på auth-sider (må stå etter alle hooks)
+  if (pathname.startsWith('/auth')) return null;
 
   async function loadData() {
     const p = await getCurrentProfile();
