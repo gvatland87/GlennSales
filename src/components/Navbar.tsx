@@ -14,17 +14,15 @@ import {
 import type { Profile, EnrichedNotification } from '@/lib/types';
 
 export default function Navbar() {
-  const pathname  = usePathname();
-  const router    = useRouter();
-  const notifRef  = useRef<HTMLDivElement>(null);
+  const pathname   = usePathname();
+  const router     = useRouter();
+  const isAuthPage = pathname.startsWith('/auth');
+  const notifRef   = useRef<HTMLDivElement>(null);
 
   const [profile,       setProfile]       = useState<Profile | null>(null);
   const [unreadCount,   setUnreadCount]   = useState(0);
   const [notifications, setNotifications] = useState<EnrichedNotification[]>([]);
   const [showNotifs,    setShowNotifs]    = useState(false);
-
-  // Ikke vis Navbar på auth-sider (må stå etter alle hooks)
-  if (pathname.startsWith('/auth')) return null;
 
   async function loadData() {
     const p = await getCurrentProfile();
@@ -40,13 +38,14 @@ export default function Navbar() {
   }
 
   useEffect(() => {
+    if (isAuthPage) return;
     loadData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname]); // last på nytt ved sideskift
+  }, [pathname]);
 
   // Supabase Realtime — live varsel-oppdatering
   useEffect(() => {
-    if (!profile?.id) return;
+    if (isAuthPage || !profile?.id) return;
     const supabase = createClient();
 
     const channel = supabase
@@ -65,7 +64,7 @@ export default function Navbar() {
 
     return () => { supabase.removeChannel(channel); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.id]);
+  }, [profile?.id, isAuthPage]);
 
   // Lukk varselpanel ved klikk utenfor
   useEffect(() => {
@@ -77,6 +76,9 @@ export default function Navbar() {
     document.addEventListener('mousedown', handleOutside);
     return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
+
+  // Alle hooks er kalt — nå er det trygt å returnere tidlig
+  if (isAuthPage) return null;
 
   async function handleOpenNotifs() {
     const next = !showNotifs;
