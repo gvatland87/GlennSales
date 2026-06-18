@@ -138,6 +138,30 @@ export async function getMeetings(): Promise<EnrichedMeeting[]> {
   return (data ?? []).map(mapMeeting);
 }
 
+/** Møter der brukeren er godkjent deltaker (ikke eier) — brukes i /mine */
+export async function getApprovedMeetings(userId: string): Promise<EnrichedMeeting[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from('meeting_interests')
+    .select(`
+      meeting:meetings!meeting_id (
+        id, owner_user_id, company_id, customer_name, starts_at, location, agenda, status,
+        owner:profiles!owner_user_id (name, companies (short_name, color))
+      )
+    `)
+    .eq('user_id', userId)
+    .eq('status', 'approved');
+
+  if (!data) return [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (data as any[])
+    .map((row) => {
+      const m = Array.isArray(row.meeting) ? row.meeting[0] : row.meeting;
+      return m ? mapMeeting(m as Record<string, unknown>) : null;
+    })
+    .filter(Boolean) as EnrichedMeeting[];
+}
+
 /** Møter eiet av én bruker — brukes i /mine */
 export async function getMyMeetings(userId: string): Promise<EnrichedMeeting[]> {
   const supabase = createClient();

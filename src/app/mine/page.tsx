@@ -5,24 +5,59 @@ import Link from 'next/link';
 import {
   getCurrentProfile,
   getMyMeetings,
+  getApprovedMeetings,
   getActiveInterests,
   approveInterest,
   rejectInterest,
 } from '@/lib/store';
 import type { EnrichedMeeting, EnrichedInterest, Profile } from '@/lib/types';
 
+function toICSDate(date: Date): string {
+  return date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+}
+
+function downloadICS(meeting: EnrichedMeeting): void {
+  const start = new Date(meeting.startsAt);
+  const end   = new Date(start.getTime() + 60 * 60 * 1000);
+  const lines = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0',
+    'PRODID:-//GlennSales//GlennSales//NO',
+    'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'BEGIN:VEVENT',
+    `DTSTART:${toICSDate(start)}`, `DTEND:${toICSDate(end)}`,
+    `SUMMARY:Møte med ${meeting.customerName}`,
+    `LOCATION:${meeting.location}`,
+    meeting.agenda ? `DESCRIPTION:${meeting.agenda.replace(/[\r\n]+/g, '\\n')}` : '',
+    `UID:glennsales-${meeting.id}@gmc.no`,
+    'END:VEVENT', 'END:VCALENDAR',
+  ].filter(Boolean).join('\r\n');
+  const blob = new Blob([lines], { type: 'text/calendar;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `mote-${meeting.customerName.toLowerCase().replace(/[\s/]+/g, '-')}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export default function MineMoeterPage() {
-  const [profile,    setProfile]    = useState<Profile | null>(null);
-  const [myMeetings, setMyMeetings] = useState<EnrichedMeeting[]>([]);
-  const [loading,    setLoading]    = useState(true);
+  const [profile,          setProfile]          = useState<Profile | null>(null);
+  const [myMeetings,       setMyMeetings]       = useState<EnrichedMeeting[]>([]);
+  const [approvedMeetings, setApprovedMeetings] = useState<EnrichedMeeting[]>([]);
+  const [loading,          setLoading]          = useState(true);
 
   useEffect(() => {
     async function load() {
       const p = await getCurrentProfile();
       setProfile(p);
       if (p?.id) {
-        const meetings = await getMyMeetings(p.id);
-        setMyMeetings(meetings);
+        const [owned, approved] = await Promise.all([
+          getMyMeetings(p.id),
+          getApprovedMeetings(p.id),
+        ]);
+        setMyMeetings(owned);
+        setApprovedMeetings(approved);
       }
       setLoading(false);
     }
@@ -31,7 +66,12 @@ export default function MineMoeterPage() {
 
   async function refreshMeetings() {
     if (!profile?.id) return;
-    setMyMeetings(await getMyMeetings(profile.id));
+    const [owned, approved] = await Promise.all([
+      getMyMeetings(profile.id),
+      getApprovedMeetings(profile.id),
+    ]);
+    setMyMeetings(owned);
+    setApprovedMeetings(approved);
   }
 
   function formatDate(iso: string) {
@@ -85,30 +125,79 @@ export default function MineMoeterPage() {
         </div>
       )}
 
-      {myMeetings.length === 0 ? (
-        <div className="text-center py-20 text-gray-400">
-          <p className="text-5xl mb-3">📋</p>
-          <p className="font-medium text-gray-500">Ingen møter ennå</p>
-          <p className="text-sm mt-2">
-            <Link href="/meetings/ny" className="text-blue-600 underline">
-              Opprett ditt første møte
-            </Link>
-          </p>
-        </div>
-      ) : (
-        <div className="grid gap-6">
-          {myMeetings.map((m) => (
-            <MeetingWithInterests
-              key={m.id}
-              meeting={m}
-              currentUserId={profile?.id ?? ''}
-              formatDate={formatDate}
-              formatShort={formatShort}
-              onUpdate={refreshMeetings}
-            />
-          ))}
-        </div>
-      )}
+      {/* Møter jeg eier */}
+      <section className="mb-8">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">
+          Møter jeg eier
+        </h2>
+        {myMeetings.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 bg-gray-50 rounded-xl border border-gray-100">
+            <p className="text-3xl mb-2">📋</p>
+            <p className="font-medium text-gray-500 text-sm">Ingen møter ennå</p>
+            <p className="text-sm mt-2">
+              <Link href="/meetings/ny" className="text-blue-600 underline">
+                Opprett ditt første møte
+              </Link>
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-6">
+            {myMeetings.map((m) => (
+              <MeetingWithInterests
+                key={m.id}
+                meeting={m}
+                currentUserId={profile?.id ?? ''}
+                formatDate={formatDate}
+                formatShort={formatShort}
+                onUpdate={refreshMeetings}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Møter jeg deltar på (godkjent) */}
+      <section>
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">
+          Møter jeg deltar på
+        </h2>
+        {approvedMeetings.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 bg-gray-50 rounded-xl border border-gray-100">
+            <p className="text-3xl mb-2">🤝</p>
+            <p className="font-medium text-gray-500 text-sm">Ingen godkjente møter ennå</p>
+            <p className="text-sm mt-1 text-gray-400">Meld interesse i Møteplan</p>
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            {approvedMeetings.map((m) => (
+              <div key={m.id} className="bg-white rounded-xl border border-green-200 bg-green-50/20 p-5 flex items-start justify-between gap-4 shadow-sm">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <h3 className="font-semibold text-gray-900">{m.customerName}</h3>
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${m.ownerCompanyColor}`}>
+                      {m.ownerCompanyShortName}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-500">📍 {m.location} · {formatDate(m.startsAt)}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Eier: {m.ownerName}</p>
+                  {m.agenda && <p className="text-sm text-gray-600 mt-2 leading-relaxed">{m.agenda}</p>}
+                </div>
+                <div className="flex flex-col items-end gap-2 shrink-0">
+                  <span className="text-xs font-semibold text-green-700 bg-green-100 px-2.5 py-1 rounded-full">
+                    ✓ Godkjent
+                  </span>
+                  <button
+                    onClick={() => downloadICS(m)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-all active:scale-95 shadow-sm"
+                  >
+                    📅 Legg til kalender
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
